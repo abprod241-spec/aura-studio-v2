@@ -19,6 +19,9 @@ jobs:
           java-version: '17'
 
       - uses: android-actions/setup-android@v3
+        with:
+          accept-android-sdk-licenses: true
+          packages: 'platform-tools platforms;android-34 build-tools;34.0.0'
 
       - uses: gradle/actions/setup-gradle@v4
         with:
@@ -26,23 +29,29 @@ jobs:
 
       - name: Build
         continue-on-error: true
-        run: gradle assembleDebug --no-daemon 2>&1 | tee full.log
+        run: |
+          touch full.log
+          gradle assembleDebug --no-daemon 2>&1 | tee full.log || true
 
-      - name: Ecrire le rapport dans le depot
+      - name: Rapport
         if: always()
         run: |
-          echo "===== ERREURS KOTLIN =====" > ERREUR.txt
-          grep -E "^e: |error:" full.log | head -n 25 >> ERREUR.txt || true
+          touch full.log
+          echo "=== RESULTAT ===" > ERREUR.txt
+          grep -E "BUILD SUCCESSFUL|BUILD FAILED" full.log | head -n 3 >> ERREUR.txt || true
           echo "" >> ERREUR.txt
-          echo "===== 40 DERNIERES LIGNES =====" >> ERREUR.txt
-          tail -n 40 full.log >> ERREUR.txt
+          echo "=== ERREURS KOTLIN ===" >> ERREUR.txt
+          grep -E "^e: " full.log | head -n 20 >> ERREUR.txt || true
+          echo "" >> ERREUR.txt
+          echo "=== CAUSE ===" >> ERREUR.txt
+          grep -A 10 "What went wrong" full.log | head -n 15 >> ERREUR.txt || true
           git config user.name "aura-bot"
           git config user.email "bot@aura.local"
           git add -f ERREUR.txt
-          git commit -m "rapport erreur" || true
+          git commit -m "rapport" || true
           git push || true
 
-      - name: Publier l APK
+      - name: APK
         if: always()
         uses: actions/upload-artifact@v4
         with:
