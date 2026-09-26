@@ -1,0 +1,17 @@
+=== RESULTAT ===
+BUILD FAILED in 1s
+
+=== ERREURS KOTLIN ===
+
+=== CAUSE ===
+* What went wrong:
+Directory '/home/runner/work/aura-studio-v2/aura-studio-v2' does not contain a Gradle build.
+
+A Gradle build should contain a 'settings.gradle' or 'settings.gradle.kts' file in its root directory. It may also contain a 'build.gradle' or 'build.gradle.kts' file.
+
+To create a new Gradle build in this directory run 'gradle init'
+
+For more information about the 'init' task, please refer to https://docs.gradle.org/8.7/userguide/build_init_plugin.html in the Gradle documentation.
+
+For more details on creating a Gradle build, please refer to https://docs.gradle.org/8.7/userguide/tutorial_using_tasks.html in the Gradle documentation.
+
