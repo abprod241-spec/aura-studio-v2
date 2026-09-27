@@ -51,8 +51,8 @@ jobs:
                   applicationId = "com.laparole.aurastudio"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 1
-                  versionName = "0.2"
+                  versionCode = 2
+                  versionName = "0.4"
               }
               compileOptions {
                   sourceCompatibility = JavaVersion.VERSION_17
@@ -124,6 +124,9 @@ jobs:
 
           object AuraEngine {
 
+              private const val PHOTO_US = 2500000L
+              private const val CLIP_MAX_MS = 4000L
+
               fun importMedia(context: Context, uris: List<Uri>): List<MediaRef> {
                   val dir = File(context.filesDir, "m" + System.currentTimeMillis())
                   dir.mkdirs()
@@ -142,21 +145,48 @@ jobs:
                   return out
               }
 
+              fun importAudio(context: Context, uri: Uri): File? {
+                  val dest = File(context.filesDir, "music.m4a")
+                  return runCatching {
+                      context.contentResolver.openInputStream(uri)!!.use { inp ->
+                          dest.outputStream().use { inp.copyTo(it) }
+                      }
+                      dest
+                  }.getOrNull()
+              }
+
               @OptIn(UnstableApi::class)
-              fun export(context: Context, media: List<MediaRef>, onDone: (String) -> Unit) {
+              fun export(context: Context, media: List<MediaRef>, music: File?, onDone: (String) -> Unit) {
                   if (media.isEmpty()) { onDone("Aucun media"); return }
+                  val hasMusic = music != null && music.length() > 0
                   val frame = Presentation.createForWidthAndHeight(
                       1080, 1920, Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP)
+
                   val items = media.map { ref ->
                       val isImage = ref.mime.startsWith("image")
                       val mb = MediaItem.Builder().setUri(Uri.fromFile(ref.file))
-                      if (isImage) mb.setMimeType(ref.mime)
+                      if (isImage) {
+                          mb.setMimeType(ref.mime)
+                      } else {
+                          mb.setClippingConfiguration(
+                              MediaItem.ClippingConfiguration.Builder()
+                                  .setEndPositionMs(CLIP_MAX_MS).build())
+                      }
                       val eb = EditedMediaItem.Builder(mb.build())
                           .setEffects(Effects(emptyList(), listOf(frame)))
-                      if (isImage) { eb.setDurationUs(2500000L); eb.setFrameRate(30) }
+                      if (isImage) { eb.setDurationUs(PHOTO_US); eb.setFrameRate(30) }
+                      if (hasMusic && !isImage) eb.setRemoveAudio(true)
                       eb.build()
                   }
-                  val comp = Composition.Builder(listOf(EditedMediaItemSequence(items))).build()
+
+                  val seqs = mutableListOf(EditedMediaItemSequence(items))
+                  if (hasMusic) {
+                      val track = EditedMediaItem.Builder(
+                          MediaItem.fromUri(Uri.fromFile(music))).build()
+                      seqs.add(EditedMediaItemSequence(listOf(track), true))
+                  }
+
+                  val comp = Composition.Builder(seqs).build()
                   val tmp = File(context.cacheDir, "aura" + System.currentTimeMillis() + ".mp4")
                   Transformer.Builder(context)
                       .setVideoMimeType(MimeTypes.VIDEO_H264)
@@ -217,6 +247,7 @@ jobs:
           import kotlinx.coroutines.Dispatchers
           import kotlinx.coroutines.launch
           import kotlinx.coroutines.withContext
+          import java.io.File
 
           class MainActivity : ComponentActivity() {
               override fun onCreate(savedInstanceState: Bundle?) {
@@ -234,6 +265,7 @@ jobs:
               val context = LocalContext.current
               val scope = rememberCoroutineScope()
               var media by remember { mutableStateOf<List<MediaRef>>(emptyList()) }
+              var music by remember { mutableStateOf<File?>(null) }
               var status by remember { mutableStateOf("Choisis des medias.") }
               var busy by remember { mutableStateOf(false) }
 
@@ -252,22 +284,42 @@ jobs:
                   }
               }
 
+              val audioPicker = rememberLauncherForActivityResult(
+                  ActivityResultContracts.GetContent()
+              ) { uri: Uri? ->
+                  if (uri != null) {
+                      busy = true
+                      scope.launch {
+                          val f = withContext(Dispatchers.IO) { AuraEngine.importAudio(context, uri) }
+                          music = f
+                          busy = false
+                          status = if (f != null) "Musique prete." else "Musique illisible."
+                      }
+                  }
+              }
+
               Column(
                   modifier = Modifier.fillMaxSize().padding(24.dp),
-                  verticalArrangement = Arrangement.spacedBy(20.dp, Alignment.CenterVertically),
+                  verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically),
                   horizontalAlignment = Alignment.CenterHorizontally
               ) {
                   Text(text = "AURA Studio", style = MaterialTheme.typography.headlineMedium)
                   Text(text = status)
                   if (busy) CircularProgressIndicator()
+
                   Button(enabled = !busy, onClick = {
                       picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
                   }) { Text(text = "1 - Choisir des medias") }
+
+                  Button(enabled = !busy, onClick = {
+                      audioPicker.launch("audio/*")
+                  }) { Text(text = if (music == null) "2 - Musique (optionnel)" else "2 - Musique OK") }
+
                   Button(enabled = !busy && media.isNotEmpty(), onClick = {
                       busy = true
                       status = "Creation du film..."
-                      AuraEngine.export(context, media) { msg -> busy = false; status = msg }
-                  }) { Text(text = "2 - Creer le film") }
+                      AuraEngine.export(context, media, music) { msg -> busy = false; status = msg }
+                  }) { Text(text = "3 - Creer le film") }
               }
           }
           EOF
