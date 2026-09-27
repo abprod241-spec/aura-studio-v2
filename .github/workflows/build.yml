@@ -1,17 +1,279 @@
-name: Build AURA APK
+name: Build AURA
 
 on:
   push:
   workflow_dispatch:
-
-permissions:
-  contents: write
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Generer le projet
+        run: |
+          mkdir -p app/src/main/java/com/laparole/aurastudio
+          mkdir -p app/src/main/res/values
+
+          cat > settings.gradle.kts <<'EOF'
+          pluginManagement {
+              repositories { google(); mavenCentral(); gradlePluginPortal() }
+          }
+          dependencyResolutionManagement {
+              repositories { google(); mavenCentral() }
+          }
+          rootProject.name = "AuraStudio"
+          include(":app")
+          EOF
+
+          cat > build.gradle.kts <<'EOF'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          EOF
+
+          cat > gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx3072m
+          android.useAndroidX=true
+          android.nonTransitiveRClass=true
+          EOF
+
+          cat > app/build.gradle.kts <<'EOF'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+          android {
+              namespace = "com.laparole.aurastudio"
+              compileSdk = 34
+              defaultConfig {
+                  applicationId = "com.laparole.aurastudio"
+                  minSdk = 26
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "0.2"
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions { jvmTarget = "17" }
+              buildFeatures { compose = true }
+              composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }
+              packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
+          }
+          dependencies {
+              implementation("androidx.core:core-ktx:1.13.1")
+              implementation("androidx.activity:activity-compose:1.9.0")
+              implementation(platform("androidx.compose:compose-bom:2024.06.00"))
+              implementation("androidx.compose.ui:ui")
+              implementation("androidx.compose.material3:material3")
+              implementation("androidx.media3:media3-transformer:1.4.1")
+              implementation("androidx.media3:media3-effect:1.4.1")
+              implementation("androidx.media3:media3-common:1.4.1")
+          }
+          EOF
+
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <application
+                  android:label="@string/app_name"
+                  android:theme="@style/Theme.AuraStudio">
+                  <activity android:name=".MainActivity" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          cat > app/src/main/res/values/strings.xml <<'EOF'
+          <resources>
+              <string name="app_name">AURA Studio</string>
+          </resources>
+          EOF
+
+          cat > app/src/main/res/values/themes.xml <<'EOF'
+          <resources>
+              <style name="Theme.AuraStudio" parent="android:Theme.Material.Light.NoActionBar" />
+          </resources>
+          EOF
+
+          cat > app/src/main/java/com/laparole/aurastudio/AuraEngine.kt <<'EOF'
+          package com.laparole.aurastudio
+
+          import android.content.ContentValues
+          import android.content.Context
+          import android.net.Uri
+          import android.os.Build
+          import android.os.Environment
+          import android.provider.MediaStore
+          import androidx.annotation.OptIn
+          import androidx.media3.common.MediaItem
+          import androidx.media3.common.MimeTypes
+          import androidx.media3.common.util.UnstableApi
+          import androidx.media3.effect.Presentation
+          import androidx.media3.transformer.*
+          import java.io.File
+
+          data class MediaRef(val file: File, val mime: String)
+
+          object AuraEngine {
+
+              fun importMedia(context: Context, uris: List<Uri>): List<MediaRef> {
+                  val dir = File(context.filesDir, "m" + System.currentTimeMillis())
+                  dir.mkdirs()
+                  val out = mutableListOf<MediaRef>()
+                  uris.forEachIndexed { i, uri ->
+                      val mime = context.contentResolver.getType(uri) ?: "image/jpeg"
+                      val ext = if (mime.startsWith("video")) "mp4" else "jpg"
+                      val dest = File(dir, "m" + i + "." + ext)
+                      runCatching {
+                          context.contentResolver.openInputStream(uri)?.use { inp ->
+                              dest.outputStream().use { inp.copyTo(it) }
+                          }
+                      }
+                      if (dest.length() > 0) out.add(MediaRef(dest, mime))
+                  }
+                  return out
+              }
+
+              @OptIn(UnstableApi::class)
+              fun export(context: Context, media: List<MediaRef>, onDone: (String) -> Unit) {
+                  if (media.isEmpty()) { onDone("Aucun media"); return }
+                  val frame = Presentation.createForWidthAndHeight(
+                      1080, 1920, Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP)
+                  val items = media.map { ref ->
+                      val isImage = ref.mime.startsWith("image")
+                      val mb = MediaItem.Builder().setUri(Uri.fromFile(ref.file))
+                      if (isImage) mb.setMimeType(ref.mime)
+                      val eb = EditedMediaItem.Builder(mb.build())
+                          .setEffects(Effects(emptyList(), listOf(frame)))
+                      if (isImage) { eb.setDurationUs(2500000L); eb.setFrameRate(30) }
+                      eb.build()
+                  }
+                  val comp = Composition.Builder(listOf(EditedMediaItemSequence(items))).build()
+                  val tmp = File(context.cacheDir, "aura" + System.currentTimeMillis() + ".mp4")
+                  Transformer.Builder(context)
+                      .setVideoMimeType(MimeTypes.VIDEO_H264)
+                      .setAudioMimeType(MimeTypes.AUDIO_AAC)
+                      .addListener(object : Transformer.Listener {
+                          override fun onCompleted(c: Composition, r: ExportResult) {
+                              val msg = runCatching { publish(context, tmp) }
+                                  .fold({ "Film cree dans Movies/AURA" }, { "Erreur: " + it.message })
+                              onDone(msg)
+                          }
+                          override fun onError(c: Composition, r: ExportResult, e: ExportException) {
+                              onDone("Echec: " + e.message)
+                          }
+                      })
+                      .build()
+                      .start(comp, tmp.absolutePath)
+              }
+
+              private fun publish(context: Context, src: File): Uri {
+                  val cr = context.contentResolver
+                  val v = ContentValues()
+                  v.put(MediaStore.Video.Media.DISPLAY_NAME, src.name)
+                  v.put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+                  if (Build.VERSION.SDK_INT >= 29) {
+                      v.put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/AURA")
+                      v.put(MediaStore.Video.Media.IS_PENDING, 1)
+                  }
+                  val uri = cr.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, v)!!
+                  cr.openOutputStream(uri)!!.use { o -> src.inputStream().use { it.copyTo(o) } }
+                  if (Build.VERSION.SDK_INT >= 29) {
+                      val v2 = ContentValues()
+                      v2.put(MediaStore.Video.Media.IS_PENDING, 0)
+                      cr.update(uri, v2, null, null)
+                  }
+                  src.delete()
+                  return uri
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/laparole/aurastudio/MainActivity.kt <<'EOF'
+          package com.laparole.aurastudio
+
+          import android.net.Uri
+          import android.os.Bundle
+          import androidx.activity.ComponentActivity
+          import androidx.activity.compose.rememberLauncherForActivityResult
+          import androidx.activity.compose.setContent
+          import androidx.activity.result.PickVisualMediaRequest
+          import androidx.activity.result.contract.ActivityResultContracts
+          import androidx.compose.foundation.layout.*
+          import androidx.compose.material3.*
+          import androidx.compose.runtime.*
+          import androidx.compose.ui.Alignment
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.platform.LocalContext
+          import androidx.compose.ui.unit.dp
+          import kotlinx.coroutines.Dispatchers
+          import kotlinx.coroutines.launch
+          import kotlinx.coroutines.withContext
+
+          class MainActivity : ComponentActivity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  setContent {
+                      MaterialTheme(colorScheme = darkColorScheme()) {
+                          Surface(modifier = Modifier.fillMaxSize()) { AuraScreen() }
+                      }
+                  }
+              }
+          }
+
+          @Composable
+          fun AuraScreen() {
+              val context = LocalContext.current
+              val scope = rememberCoroutineScope()
+              var media by remember { mutableStateOf<List<MediaRef>>(emptyList()) }
+              var status by remember { mutableStateOf("Choisis des medias.") }
+              var busy by remember { mutableStateOf(false) }
+
+              val picker = rememberLauncherForActivityResult(
+                  ActivityResultContracts.PickMultipleVisualMedia(20)
+              ) { uris: List<Uri> ->
+                  if (uris.isNotEmpty()) {
+                      busy = true
+                      status = "Importation..."
+                      scope.launch {
+                          val list = withContext(Dispatchers.IO) { AuraEngine.importMedia(context, uris) }
+                          media = list
+                          busy = false
+                          status = list.size.toString() + " media(s) prets."
+                      }
+                  }
+              }
+
+              Column(
+                  modifier = Modifier.fillMaxSize().padding(24.dp),
+                  verticalArrangement = Arrangement.spacedBy(20.dp, Alignment.CenterVertically),
+                  horizontalAlignment = Alignment.CenterHorizontally
+              ) {
+                  Text(text = "AURA Studio", style = MaterialTheme.typography.headlineMedium)
+                  Text(text = status)
+                  if (busy) CircularProgressIndicator()
+                  Button(enabled = !busy, onClick = {
+                      picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
+                  }) { Text(text = "1 - Choisir des medias") }
+                  Button(enabled = !busy && media.isNotEmpty(), onClick = {
+                      busy = true
+                      status = "Creation du film..."
+                      AuraEngine.export(context, media) { msg -> busy = false; status = msg }
+                  }) { Text(text = "2 - Creer le film") }
+              }
+          }
+          EOF
+
+          echo "--- Fichiers generes ---"
+          find . -type f -not -path "./.git/*" -not -path "./.github/*"
 
       - uses: actions/setup-java@v4
         with:
@@ -27,34 +289,24 @@ jobs:
         with:
           gradle-version: '8.7'
 
-      - name: Build
+      - name: Compiler
         continue-on-error: true
-        run: |
-          touch full.log
-          gradle assembleDebug --no-daemon 2>&1 | tee full.log || true
+        run: gradle assembleDebug --no-daemon
 
-      - name: Rapport
-        if: always()
-        run: |
-          touch full.log
-          echo "=== RESULTAT ===" > ERREUR.txt
-          grep -E "BUILD SUCCESSFUL|BUILD FAILED" full.log | head -n 3 >> ERREUR.txt || true
-          echo "" >> ERREUR.txt
-          echo "=== ERREURS KOTLIN ===" >> ERREUR.txt
-          grep -E "^e: " full.log | head -n 20 >> ERREUR.txt || true
-          echo "" >> ERREUR.txt
-          echo "=== CAUSE ===" >> ERREUR.txt
-          grep -A 10 "What went wrong" full.log | head -n 15 >> ERREUR.txt || true
-          git config user.name "aura-bot"
-          git config user.email "bot@aura.local"
-          git add -f ERREUR.txt
-          git commit -m "rapport" || true
-          git push || true
-
-      - name: APK
+      - name: Publier APK
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: aura-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: ignore
+
+      - name: Verdict
+        if: always()
+        run: |
+          if [ -f app/build/outputs/apk/debug/app-debug.apk ]; then
+            echo "APK PRESENT"
+          else
+            echo "PAS D APK"
+            exit 1
+          fi
