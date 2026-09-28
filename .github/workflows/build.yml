@@ -113,9 +113,9 @@ jobs:
           import android.os.Environment
           import android.provider.MediaStore
           import androidx.annotation.OptIn
+          import androidx.media3.common.Effect
           import androidx.media3.common.MediaItem
           import androidx.media3.common.MimeTypes
-          import androidx.media3.common.effect.GlEffect
           import androidx.media3.common.util.UnstableApi
           import androidx.media3.effect.Contrast
           import androidx.media3.effect.Presentation
@@ -127,7 +127,7 @@ jobs:
 
           enum class Preset(val label: String, val photoUs: Long, val clipMs: Long) {
               DOUX("Doux", 3200000L, 5000L),
-              DYNAMIQUE("Dynamique", 1600000L, 3000L),
+              DYNAMIQUE("Dynamique", 1500000L, 2500L),
               CINEMA("Cinema", 2500000L, 4000L)
           }
 
@@ -162,15 +162,12 @@ jobs:
               }
 
               @OptIn(UnstableApi::class)
-              private fun videoEffects(preset: Preset): List<GlEffect> {
-                  val frame = Presentation.createForWidthAndHeight(
-                      1080, 1920, Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP)
-                  val list = mutableListOf<GlEffect>(frame)
-                  when (preset) {
-                      Preset.DYNAMIQUE -> list.add(Contrast(0.25f))
-                      Preset.CINEMA -> list.add(RgbFilter.createGrayscaleFilter())
-                      else -> {}
-                  }
+              private fun buildEffects(preset: Preset): List<Effect> {
+                  val list = mutableListOf<Effect>()
+                  list.add(Presentation.createForWidthAndHeight(
+                      1080, 1920, Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP))
+                  if (preset == Preset.DYNAMIQUE) list.add(Contrast(0.3f))
+                  if (preset == Preset.CINEMA) list.add(RgbFilter.createGrayscaleFilter())
                   return list
               }
 
@@ -184,7 +181,7 @@ jobs:
               ) {
                   if (media.isEmpty()) { onDone("Aucun media"); return }
                   val hasMusic = music != null && music.length() > 0
-                  val fx = videoEffects(preset)
+                  val fx = buildEffects(preset)
 
                   val items = media.map { ref ->
                       val isImage = ref.mime.startsWith("image")
@@ -198,7 +195,10 @@ jobs:
                       }
                       val eb = EditedMediaItem.Builder(mb.build())
                           .setEffects(Effects(emptyList(), fx))
-                      if (isImage) { eb.setDurationUs(preset.photoUs); eb.setFrameRate(30) }
+                      if (isImage) {
+                          eb.setDurationUs(preset.photoUs)
+                          eb.setFrameRate(30)
+                      }
                       if (hasMusic && !isImage) eb.setRemoveAudio(true)
                       eb.build()
                   }
@@ -287,4 +287,118 @@ jobs:
           @Composable
           fun AuraScreen() {
               val context = LocalContext.current
-              
+              val scope = rememberCoroutineScope()
+              var media by remember { mutableStateOf<List<MediaRef>>(emptyList()) }
+              var music by remember { mutableStateOf<File?>(null) }
+              var preset by remember { mutableStateOf(Preset.CINEMA) }
+              var status by remember { mutableStateOf("Choisis des medias.") }
+              var busy by remember { mutableStateOf(false) }
+
+              val picker = rememberLauncherForActivityResult(
+                  ActivityResultContracts.PickMultipleVisualMedia(20)
+              ) { uris: List<Uri> ->
+                  if (uris.isNotEmpty()) {
+                      busy = true
+                      status = "Importation..."
+                      scope.launch {
+                          val list = withContext(Dispatchers.IO) { AuraEngine.importMedia(context, uris) }
+                          media = list
+                          busy = false
+                          status = list.size.toString() + " media(s) prets."
+                      }
+                  }
+              }
+
+              val audioPicker = rememberLauncherForActivityResult(
+                  ActivityResultContracts.GetContent()
+              ) { uri: Uri? ->
+                  if (uri != null) {
+                      busy = true
+                      scope.launch {
+                          val f = withContext(Dispatchers.IO) { AuraEngine.importAudio(context, uri) }
+                          music = f
+                          busy = false
+                          status = if (f != null) "Musique prete." else "Musique illisible."
+                      }
+                  }
+              }
+
+              Column(
+                  modifier = Modifier.fillMaxSize().padding(20.dp),
+                  verticalArrangement = Arrangement.spacedBy(14.dp, Alignment.CenterVertically),
+                  horizontalAlignment = Alignment.CenterHorizontally
+              ) {
+                  Text(text = "AURA Studio", style = MaterialTheme.typography.headlineMedium)
+                  Text(text = status)
+                  if (busy) CircularProgressIndicator()
+
+                  Button(enabled = !busy, onClick = {
+                      picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
+                  }) { Text(text = "1 - Choisir des medias") }
+
+                  Button(enabled = !busy, onClick = {
+                      audioPicker.launch("audio/*")
+                  }) { Text(text = if (music == null) "2 - Musique (optionnel)" else "2 - Musique OK") }
+
+                  Text(text = "3 - Ambiance")
+                  Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                      Preset.values().forEach { p ->
+                          if (p == preset) {
+                              Button(enabled = !busy, onClick = { preset = p }) { Text(text = p.label) }
+                          } else {
+                              OutlinedButton(enabled = !busy, onClick = { preset = p }) { Text(text = p.label) }
+                          }
+                      }
+                  }
+
+                  Button(enabled = !busy && media.isNotEmpty(), onClick = {
+                      busy = true
+                      status = "Creation du film..."
+                      AuraEngine.export(context, media, music, preset) { msg ->
+                          busy = false
+                          status = msg
+                      }
+                  }) { Text(text = "4 - Creer le film") }
+              }
+          }
+          EOF
+
+          echo "--- Fichiers generes ---"
+          find . -type f -not -path "./.git/*" -not -path "./.github/*"
+          echo "===== FIN DU FICHIER ====="
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+        with:
+          accept-android-sdk-licenses: true
+          packages: 'platform-tools platforms;android-34 build-tools;34.0.0'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Compiler
+        continue-on-error: true
+        run: gradle assembleDebug --no-daemon
+
+      - name: Publier APK
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aura-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: ignore
+
+      - name: Verdict
+        if: always()
+        run: |
+          if [ -f app/build/outputs/apk/debug/app-debug.apk ]; then
+            echo "APK PRESENT"
+          else
+            echo "PAS D APK"
+            exit 1
+          fi
