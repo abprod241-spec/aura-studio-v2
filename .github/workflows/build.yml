@@ -10,9 +10,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Generer le projet
+      - name: Config Gradle
         run: |
-          mkdir -p app/src/main/java/com/laparole/aurastudio
           mkdir -p app/src/main/res/values
 
           cat > settings.gradle.kts <<'EOF'
@@ -51,8 +50,8 @@ jobs:
                   applicationId = "com.laparole.aurastudio"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 4
-                  versionName = "0.6"
+                  versionCode = 5
+                  versionName = "0.7"
               }
               compileOptions {
                   sourceCompatibility = JavaVersion.VERSION_17
@@ -78,9 +77,8 @@ jobs:
           cat > app/src/main/AndroidManifest.xml <<'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-              <application
-                  android:label="@string/app_name"
-                  android:theme="@style/Theme.AuraStudio">
+              <application android:label="AURA Studio"
+                  android:theme="@android:style/Theme.Material.NoActionBar">
                   <activity android:name=".MainActivity" android:exported="true">
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN" />
@@ -91,134 +89,41 @@ jobs:
           </manifest>
           EOF
 
-          cat > app/src/main/res/values/strings.xml <<'EOF'
-          <resources>
-              <string name="app_name">AURA Studio</string>
-          </resources>
-          EOF
+          echo "=== SOURCES PRESENTES ==="
+          ls -la app/src/main/java/com/laparole/aurastudio/ || echo "DOSSIER KOTLIN MANQUANT"
 
-          cat > app/src/main/res/values/themes.xml <<'EOF'
-          <resources>
-              <style name="Theme.AuraStudio" parent="android:Theme.Material.Light.NoActionBar" />
-          </resources>
-          EOF
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
 
-          cat > app/src/main/java/com/laparole/aurastudio/AuraEngine.kt <<'EOF'
-          package com.laparole.aurastudio
+      - uses: android-actions/setup-android@v3
+        with:
+          accept-android-sdk-licenses: true
+          packages: 'platform-tools platforms;android-34 build-tools;34.0.0'
 
-          import android.content.ContentValues
-          import android.content.Context
-          import android.graphics.Bitmap
-          import android.graphics.BitmapFactory
-          import android.net.Uri
-          import android.os.Build
-          import android.os.Environment
-          import android.provider.MediaStore
-          import androidx.annotation.OptIn
-          import androidx.media3.common.Effect
-          import androidx.media3.common.MediaItem
-          import androidx.media3.common.MimeTypes
-          import androidx.media3.common.util.UnstableApi
-          import androidx.media3.effect.Contrast
-          import androidx.media3.effect.Presentation
-          import androidx.media3.effect.RgbFilter
-          import androidx.media3.transformer.*
-          import java.io.File
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
 
-          data class MediaRef(val file: File, val mime: String)
+      - name: Compiler
+        continue-on-error: true
+        run: gradle assembleDebug --no-daemon
 
-          enum class Preset(val label: String, val photoUs: Long, val clipMs: Long) {
-              DOUX("Doux", 3200000L, 5000L),
-              DYNAMIQUE("Dynamique", 1500000L, 2500L),
-              CINEMA("Cinema", 2500000L, 4000L)
-          }
+      - name: Publier APK
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aura-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: ignore
 
-          object AuraEngine {
-
-              fun importMedia(context: Context, uris: List<Uri>): List<MediaRef> {
-                  val dir = File(context.filesDir, "m" + System.currentTimeMillis())
-                  dir.mkdirs()
-                  val out = mutableListOf<MediaRef>()
-                  uris.forEachIndexed { i, uri ->
-                      val mime = context.contentResolver.getType(uri) ?: "image/jpeg"
-                      if (mime.startsWith("video")) {
-                          val dest = File(dir, "m" + i + ".mp4")
-                          runCatching {
-                              context.contentResolver.openInputStream(uri)?.use { inp ->
-                                  dest.outputStream().use { inp.copyTo(it) }
-                              }
-                          }
-                          if (dest.length() > 0) out.add(MediaRef(dest, "video/mp4"))
-                      } else {
-                          val dest = File(dir, "m" + i + ".jpg")
-                          runCatching {
-                              val bmp = context.contentResolver.openInputStream(uri)!!.use {
-                                  BitmapFactory.decodeStream(it)
-                              }
-                              dest.outputStream().use { o ->
-                                  bmp.compress(Bitmap.CompressFormat.JPEG, 92, o)
-                              }
-                              bmp.recycle()
-                          }
-                          if (dest.length() > 0) out.add(MediaRef(dest, "image/jpeg"))
-                      }
-                  }
-                  return out
-              }
-
-              fun importAudio(context: Context, uri: Uri): File? {
-                  val dest = File(context.filesDir, "music.m4a")
-                  return runCatching {
-                      context.contentResolver.openInputStream(uri)!!.use { inp ->
-                          dest.outputStream().use { inp.copyTo(it) }
-                      }
-                      dest
-                  }.getOrNull()
-              }
-
-              @OptIn(UnstableApi::class)
-              private fun buildEffects(preset: Preset): List<Effect> {
-                  val list = mutableListOf<Effect>()
-                  list.add(Presentation.createForWidthAndHeight(
-                      1080, 1920, Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP))
-                  if (preset == Preset.DYNAMIQUE) list.add(Contrast(0.3f))
-                  if (preset == Preset.CINEMA) list.add(RgbFilter.createGrayscaleFilter())
-                  return list
-              }
-
-              @OptIn(UnstableApi::class)
-              fun export(
-                  context: Context,
-                  media: List<MediaRef>,
-                  music: File?,
-                  preset: Preset,
-                  onDone: (String) -> Unit
-              ) {
-                  if (media.isEmpty()) { onDone("Aucun media"); return }
-                  val hasMusic = music != null && music.length() > 0
-                  val fx = buildEffects(preset)
-
-                  val items = media.map { ref ->
-                      val isImage = ref.mime.startsWith("image")
-                      val mb = MediaItem.Builder().setUri(Uri.fromFile(ref.file))
-                      if (isImage) {
-                          mb.setMimeType(ref.mime)
-                      } else {
-                          mb.setClippingConfiguration(
-                              MediaItem.ClippingConfiguration.Builder()
-                                  .setEndPositionMs(preset.clipMs).build())
-                      }
-                      val eb = EditedMediaItem.Builder(mb.build())
-                          .setEffects(Effects(emptyList(), fx))
-                      if (isImage) {
-                          eb.setDurationUs(preset.photoUs)
-                          eb.setFrameRate(30)
-                      }
-                      if (hasMusic && !isImage) eb.setRemoveAudio(true)
-                      eb.build()
-                  }
-
-                  val seqs = mutableListOf(EditedMediaItemSequence(items))
-                  if (hasMusic) {
-                      val track = EditedMediaItem.Builder(
-                          
+      - name: Verdict
+        if: always()
+        run: |
+          if [ -f app/build/outputs/apk/debug/app-debug.apk ]; then
+            echo "APK PRESENT"
+          else
+            echo "PAS D APK"
+            exit 1
+          fi
