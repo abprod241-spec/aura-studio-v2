@@ -8,25 +8,55 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import kotlin.system.exitProcess
 
 class MainActivity : ComponentActivity() {
+
+    init {
+        Thread.setDefaultUncaughtExceptionHandler { _, e ->
+            runCatching {
+                File(filesDir, "crash.txt").writeText(e.stackTraceToString().take(3000))
+            }
+            exitProcess(1)
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val crashFile = File(filesDir, "crash.txt")
+        val lastCrash = if (crashFile.exists()) crashFile.readText() else null
+        crashFile.delete()
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
-                Surface(modifier = Modifier.fillMaxSize()) { AuraScreen() }
+                Surface(modifier = Modifier.fillMaxSize()) {
+                    if (lastCrash != null) CrashScreen(lastCrash) else AuraScreen()
+                }
             }
         }
+    }
+}
+
+@Composable
+fun CrashScreen(text: String) {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState())
+    ) {
+        Text(text = "Plantage precedent", style = MaterialTheme.typography.titleMedium)
+        Spacer(modifier = Modifier.height(12.dp))
+        Text(text = text, fontSize = 11.sp)
     }
 }
 
